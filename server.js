@@ -1,7 +1,12 @@
 const { buildSlovakDartsOpenSeedMatches } = require('./seed_slovak_darts_open');
 const express = require('express');
 const cors = require('cors');
-const { getLiveDartsData } = require('./scraper');
+
+const {
+  getLiveDartsData,
+  getSport1DebugText,
+} = require('./scraper');
+
 const {
   archiveMatches,
   loadArchivedMatches,
@@ -9,7 +14,7 @@ const {
 } = require('./supabase_archive');
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
@@ -23,6 +28,7 @@ app.get('/', (req, res) => {
       '/live/current',
       '/live/scheduled',
       '/live/finished',
+      '/debug/sport1-text',
       '/archive',
       '/archive/tournaments',
       '/archive/seed/slovak-darts-open',
@@ -44,6 +50,21 @@ app.get('/live', async (req, res) => {
       error: true,
       message: error.message,
       matches: [],
+    });
+  }
+});
+
+app.get('/debug/sport1-text', async (req, res) => {
+  try {
+    const data = await getSport1DebugText();
+
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({
+      lastUpdate: new Date().toISOString(),
+      source: 'sport1',
+      error: true,
+      message: error.message,
     });
   }
 });
@@ -172,7 +193,5 @@ app.get('/archive/seed/slovak-darts-open', async (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(
-    `DartCenter Live Scraper läuft auf http://localhost:${port}`,
-  );
+  console.log(`DartCenter Live Scraper läuft auf Port ${port}`);
 });
