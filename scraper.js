@@ -1,8 +1,6 @@
 const { chromium } = require('playwright');
 
 const SPORT1_DARTS_URL = 'https://www.sport1.de/live/darts-sport';
-const CHROME_PATH =
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 
 const CACHE_DURATION_MS = 30 * 1000;
 const STALE_CACHE_MAX_AGE_MS = 10 * 60 * 1000;
@@ -127,7 +125,7 @@ async function refreshCacheNow() {
 async function scrapeLiveDartsData() {
   const browser = await chromium.launch({
     headless: true,
-    executablePath: CHROME_PATH,
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
 
   try {
