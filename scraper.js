@@ -1,7 +1,6 @@
 const { chromium } = require('playwright');
 
-const SPORT1_DARTS_URL =
-  'https://www.sport1.de/daten/darts/pdc-wm/ergebnisse';
+const SPORT1_DARTS_URL = 'https://www.sport1.de/live/darts-sport';
 
 async function createRenderedPage() {
   const browser = await chromium.launch({
