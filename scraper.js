@@ -24,6 +24,13 @@ function normalizeText(value) {
     .trim();
 }
 
+function normalizeKey(value) {
+  return normalizeText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9äöüß]+/gi, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
 function detectStatus(text) {
   const value = normalizeText(text).toLowerCase();
 
@@ -38,7 +45,6 @@ function detectStatus(text) {
   if (
     value.includes('beendet') ||
     value.includes('endstand') ||
-    value.includes('final') ||
     /\d+\s*:\s*\d+/.test(value)
   ) {
     return 'finished';
@@ -49,19 +55,15 @@ function detectStatus(text) {
 
 function buildMatchId(match) {
   return [
+    match.dateText,
     match.tournament,
     match.round,
     match.homeName,
     match.awayName,
-    match.dateText,
     match.timeText,
+    match.scoreText,
   ]
-    .map((part) =>
-      normalizeText(part)
-        .toLowerCase()
-        .replace(/[^a-z0-9äöüß]+/gi, '-')
-        .replace(/^-+|-+$/g, '')
-    )
+    .map(normalizeKey)
     .filter(Boolean)
     .join('_');
 }
@@ -116,24 +118,24 @@ function guessTournamentFromText(text) {
 function guessRoundFromText(text) {
   const value = normalizeText(text).toLowerCase();
 
-  if (value.includes('finale') && !value.includes('halbfinale')) {
-    return 'Finale';
-  }
-
-  if (value.includes('halbfinale')) {
-    return 'Halbfinale';
-  }
-
-  if (value.includes('viertelfinale')) {
-    return 'Viertelfinale';
+  if (value.includes('sechzehntelfinale')) {
+    return 'Sechzehntelfinale';
   }
 
   if (value.includes('achtelfinale')) {
     return 'Achtelfinale';
   }
 
-  if (value.includes('sechzehntelfinale')) {
-    return 'Sechzehntelfinale';
+  if (value.includes('viertelfinale')) {
+    return 'Viertelfinale';
+  }
+
+  if (value.includes('halbfinale')) {
+    return 'Halbfinale';
+  }
+
+  if (value.includes('finale')) {
+    return 'Finale';
   }
 
   if (value.includes('1. runde') || value.includes('erste runde')) {
@@ -151,6 +153,11 @@ function guessRoundFromText(text) {
   return 'Spiel';
 }
 
+function extractTimeFromText(text) {
+  const match = normalizeText(text).match(/\b\d{1,2}:\d{2}\b/);
+  return match ? match[0] : '';
+}
+
 function extractNamesFromLine(line) {
   const text = normalizeText(line);
 
@@ -166,8 +173,14 @@ function extractNamesFromLine(line) {
 
     if (parts.length >= 2 && parts[0] && parts[1]) {
       return {
-        homeName: parts[0].replace(/\d+\s*:\s*\d+/g, '').trim(),
-        awayName: parts[1].replace(/\d+\s*:\s*\d+/g, '').trim(),
+        homeName: parts[0]
+          .replace(/\d+\s*:\s*\d+/g, '')
+          .replace(/\b\d{1,2}:\d{2}\b/g, '')
+          .trim(),
+        awayName: parts[1]
+          .replace(/\d+\s*:\s*\d+/g, '')
+          .replace(/\b\d{1,2}:\d{2}\b/g, '')
+          .trim(),
       };
     }
   }
@@ -189,7 +202,7 @@ function isUsefulMatchLine(line) {
   );
 }
 
-function parseMatchesFromText(pageText) {
+function parseMatchesFromText(pageText, dateText = '') {
   const lines = pageText
     .split('\n')
     .map(normalizeText)
@@ -210,7 +223,7 @@ function parseMatchesFromText(pageText) {
       continue;
     }
 
-    const contextLines = lines.slice(Math.max(0, i - 6), i + 7);
+    const contextLines = lines.slice(Math.max(0, i - 8), i + 9);
     const contextText = contextLines.join(' ');
     const score = parseScore(contextText);
     const status = detectStatus(contextText);
@@ -226,8 +239,9 @@ function parseMatchesFromText(pageText) {
       homeScore: score.homeScore,
       awayScore: score.awayScore,
       hasScore: score.hasScore,
-      dateText: '',
-      timeText: '',
+      dateText,
+      timeText: extractTimeFromText(contextText),
+      scoreText: score.hasScore ? `${score.homeScore}:${score.awayScore}` : '',
       rawText: contextText,
       updatedAt: new Date().toISOString(),
     };
@@ -254,20 +268,127 @@ function splitMatchesByStatus(matches) {
   };
 }
 
+function removeDuplicateMatches(matches) {
+  const seen = new Set();
+  const result = [];
+
+  for (const match of matches) {
+    const key = [
+      match.dateText,
+      match.tournament,
+      match.round,
+      match.homeName,
+      match.awayName,
+      match.timeText,
+      match.scoreText,
+    ]
+      .map(normalizeKey)
+      .join('|');
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    result.push(match);
+  }
+
+  return result;
+}
+
+function isDateTabLabel(value) {
+  const text = normalizeText(value);
+
+  if (!text) return false;
+
+  if (['Heute', 'Morgen', 'Gestern'].includes(text)) {
+    return true;
+  }
+
+  return /^(Mo|Di|Mi|Do|Fr|Sa|So)\s+\d{1,2}$/i.test(text);
+}
+
+function sortDateLabels(labels) {
+  const unique = [...new Set(labels)];
+
+  const todayIndex = unique.findIndex((label) => label === 'Heute');
+
+  if (todayIndex < 0) {
+    return unique;
+  }
+
+  const beforeToday = unique.slice(0, todayIndex);
+  const todayAndAfter = unique.slice(todayIndex);
+
+  return [...todayAndAfter, ...beforeToday];
+}
+
+async function extractDateTabs(page) {
+  const labels = await page
+    .locator('button, a, [role="button"]')
+    .evaluateAll((elements) =>
+      elements
+        .map((element) => (element.innerText || element.textContent || '').trim())
+        .filter(Boolean)
+    );
+
+  return sortDateLabels(labels.filter(isDateTabLabel));
+}
+
+async function getVisibleBodyText(page) {
+  const text = await page.locator('body').innerText({
+    timeout: 15000,
+  });
+
+  return text;
+}
+
+async function openSport1Page(page) {
+  await page.goto(SPORT1_DARTS_URL, {
+    waitUntil: 'domcontentloaded',
+    timeout: 60000,
+  });
+
+  await page.waitForTimeout(2500);
+}
+
+async function clickDateTab(page, dateLabel) {
+  const candidates = page.locator('button, a, [role="button"]').filter({
+    hasText: dateLabel,
+  });
+
+  const count = await candidates.count();
+
+  for (let index = 0; index < count; index += 1) {
+    const candidate = candidates.nth(index);
+
+    try {
+      if (!(await candidate.isVisible())) {
+        continue;
+      }
+
+      await candidate.click({
+        timeout: 5000,
+      });
+
+      await page.waitForTimeout(1200);
+
+      return true;
+    } catch (_) {
+      continue;
+    }
+  }
+
+  return false;
+}
+
 async function getRenderedSport1Text() {
   const { browser, page } = await createRenderedPage();
 
   try {
-    await page.goto(SPORT1_DARTS_URL, {
-      waitUntil: 'networkidle',
-      timeout: 60000,
-    });
+    await openSport1Page(page);
 
-    await page.waitForTimeout(2500);
-
-    const text = await page.locator('body').innerText({
-      timeout: 15000,
-    });
+    const text = await getVisibleBodyText(page);
 
     return normalizeText(text).replace(/\s{2,}/g, '\n');
   } finally {
@@ -275,16 +396,80 @@ async function getRenderedSport1Text() {
   }
 }
 
+async function getRenderedSport1TextsByDate() {
+  const { browser, page } = await createRenderedPage();
+
+  try {
+    await openSport1Page(page);
+
+    const dateTabs = await extractDateTabs(page);
+    const results = [];
+
+    const firstText = await getVisibleBodyText(page);
+
+    results.push({
+      dateText: dateTabs.includes('Heute') ? 'Heute' : dateTabs[0] || '',
+      clicked: false,
+      text: firstText,
+    });
+
+    for (const dateLabel of dateTabs) {
+      const alreadyCaptured = results.some(
+        (result) => result.dateText === dateLabel,
+      );
+
+      if (alreadyCaptured) {
+        continue;
+      }
+
+      const clicked = await clickDateTab(page, dateLabel);
+
+      if (!clicked) {
+        continue;
+      }
+
+      const text = await getVisibleBodyText(page);
+
+      results.push({
+        dateText: dateLabel,
+        clicked: true,
+        text,
+      });
+    }
+
+    return {
+      dateTabs,
+      results,
+    };
+  } finally {
+    await browser.close();
+  }
+}
+
 async function getLiveDartsData() {
-  const renderedText = await getRenderedSport1Text();
-  const matches = parseMatchesFromText(renderedText);
+  const rendered = await getRenderedSport1TextsByDate();
+
+  const matches = removeDuplicateMatches(
+    rendered.results.flatMap((result) =>
+      parseMatchesFromText(result.text, result.dateText),
+    ),
+  );
+
   const grouped = splitMatchesByStatus(matches);
 
   return {
     source: 'sport1',
     status: 'ok',
+    mode: 'playwright-render-multi-date',
+    url: SPORT1_DARTS_URL,
     lastUpdated: new Date().toISOString(),
     total: matches.length,
+    matchCount: matches.length,
+    liveMatches: grouped.current.length,
+    scheduledMatches: grouped.scheduled.length,
+    finishedMatches: grouped.finished.length,
+    hasLiveMatches: grouped.current.length > 0,
+    availableDates: rendered.dateTabs,
     matches,
     current: grouped.current,
     scheduled: grouped.scheduled,
