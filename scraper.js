@@ -31,6 +31,22 @@ function normalizeKey(value) {
     .replace(/^-+|-+$/g, '');
 }
 
+function formatPlayerName(value) {
+  const text = normalizeText(value);
+
+  if (!text.includes(',')) {
+    return text;
+  }
+
+  const parts = text.split(',').map((part) => part.trim());
+
+  if (parts.length < 2 || !parts[0] || !parts[1]) {
+    return text;
+  }
+
+  return `${parts[1]} ${parts[0]}`;
+}
+
 async function openSport1Page(page) {
   await page.goto(SPORT1_DARTS_URL, {
     waitUntil: 'domcontentloaded',
@@ -82,7 +98,11 @@ async function waitForLiveWidgetToFinishLoading(page) {
           /\b\d{1,2}:\d{2}\b/.test(text) ||
           /\d+\s*:\s*\d+/.test(text) ||
           /\bvs\.?\b/i.test(text) ||
-          /\bgegen\b/i.test(text);
+          /\bgegen\b/i.test(text) ||
+          text.includes('Achtelfinale') ||
+          text.includes('Viertelfinale') ||
+          text.includes('Halbfinale') ||
+          text.includes('Finale');
 
         if (hasLoadingSpinner && !hasNoEventsText && !hasPossibleMatchContent) {
           return false;
@@ -183,7 +203,11 @@ async function getLiveWidgetDebugState(page) {
         /\b\d{1,2}:\d{2}\b/.test(text) ||
         /\d+\s*:\s*\d+/.test(text) ||
         /\bvs\.?\b/i.test(text) ||
-        /\bgegen\b/i.test(text),
+        /\bgegen\b/i.test(text) ||
+        text.includes('Achtelfinale') ||
+        text.includes('Viertelfinale') ||
+        text.includes('Halbfinale') ||
+        text.includes('Finale'),
     };
   });
 }
@@ -230,39 +254,44 @@ async function clickDateTab(page, dateLabel) {
         return false;
       }
 
-      const elements = Array.from(root.querySelectorAll('*')).filter(
+      const parts = normalizedLabel.split(/\s+/);
+      const dayName = parts[0] || normalizedLabel;
+      const dayNumber = parts[1] || null;
+
+      const calendarItems = Array.from(root.querySelectorAll('div')).filter(
         (element) => {
-          const text = (element.innerText || element.textContent || '').trim();
+          const text = (element.innerText || element.textContent || '')
+            .replace(/\s+/g, ' ')
+            .trim();
 
-          if (text === normalizedLabel) {
-            return true;
+          if (!text) {
+            return false;
           }
 
-          if (normalizedLabel.includes(' ')) {
-            const parts = normalizedLabel.split(/\s+/);
-
-            if (parts.length === 2) {
-              const compactText = text.replace(/\s+/g, ' ').trim();
-              return compactText === `${parts[0]} ${parts[1]}`;
-            }
+          if (normalizedLabel === 'Heute') {
+            return text === 'Heute' || /^Heute\s+\d{1,2}$/.test(text);
           }
 
-          return false;
+          if (!dayNumber) {
+            return text === normalizedLabel;
+          }
+
+          return (
+            text === normalizedLabel ||
+            text === `${dayName} ${dayNumber}` ||
+            (text.includes(dayName) && text.includes(dayNumber))
+          );
         },
       );
 
-      for (const element of elements) {
+      for (const element of calendarItems) {
         const rect = element.getBoundingClientRect();
 
         if (rect.width <= 0 || rect.height <= 0) {
           continue;
         }
 
-        const clickable =
-          element.closest('[data-testid="live-widget"] div') ||
-          element.closest('button, a, [role="button"]') ||
-          element.parentElement ||
-          element;
+        const clickable = element.closest('div') || element;
 
         clickable.dispatchEvent(
           new PointerEvent('pointerdown', {
@@ -323,33 +352,13 @@ async function clickDateTab(page, dateLabel) {
   }
 }
 
-function detectStatus(text) {
-  const value = normalizeText(text).toLowerCase();
+function parseScoreText(value) {
+  const text = normalizeText(value);
+  const match = text.match(/(\d+)\s*:\s*(\d+)/);
 
-  if (
-    value.includes('live') ||
-    value.includes('läuft') ||
-    value.includes('aktuell')
-  ) {
-    return 'live';
-  }
-
-  if (
-    value.includes('beendet') ||
-    value.includes('endstand') ||
-    /\d+\s*:\s*\d+/.test(value)
-  ) {
-    return 'finished';
-  }
-
-  return 'scheduled';
-}
-
-function parseScore(text) {
-  const scoreMatch = normalizeText(text).match(/(\d+)\s*:\s*(\d+)/);
-
-  if (!scoreMatch) {
+  if (!match) {
     return {
+      scoreText: '',
       homeScore: null,
       awayScore: null,
       hasScore: false,
@@ -357,119 +366,45 @@ function parseScore(text) {
   }
 
   return {
-    homeScore: Number(scoreMatch[1]),
-    awayScore: Number(scoreMatch[2]),
+    scoreText: `${Number(match[1])}:${Number(match[2])}`,
+    homeScore: Number(match[1]),
+    awayScore: Number(match[2]),
     hasScore: true,
   };
 }
 
-function extractTimeFromText(text) {
-  const match = normalizeText(text).match(/\b\d{1,2}:\d{2}\b/);
-  return match ? match[0] : '';
+function determineStatusFromScore(score) {
+  if (!score.hasScore) {
+    return 'scheduled';
+  }
+
+  return 'finished';
 }
 
-function guessTournamentFromText(text) {
-  const value = normalizeText(text);
-
-  const knownTournaments = [
-    'Slovak Darts Open',
-    'Nordic Darts Masters',
-    'International Darts Open',
-    'European Darts Open',
-    'European Darts Grand Prix',
-    'World Matchplay',
-    'World Cup of Darts',
-    'Premier League',
-    'UK Open',
-    'World Darts Championship',
-    'Players Championship',
-    'World Grand Prix',
-    'Grand Slam of Darts',
-    'European Championship',
-  ];
-
-  for (const tournament of knownTournaments) {
-    if (value.toLowerCase().includes(tournament.toLowerCase())) {
-      return tournament;
-    }
+function determineWinner(homeName, awayName, status, score) {
+  if (status !== 'finished' || !score.hasScore) {
+    return null;
   }
 
-  return 'PDC Darts';
-}
-
-function guessRoundFromText(text) {
-  const value = normalizeText(text).toLowerCase();
-
-  if (value.includes('sechzehntelfinale')) return 'Sechzehntelfinale';
-  if (value.includes('achtelfinale')) return 'Achtelfinale';
-  if (value.includes('viertelfinale')) return 'Viertelfinale';
-  if (value.includes('halbfinale')) return 'Halbfinale';
-  if (value.includes('finale')) return 'Finale';
-  if (value.includes('1. runde') || value.includes('erste runde')) {
-    return '1. Runde';
-  }
-  if (value.includes('2. runde') || value.includes('zweite runde')) {
-    return '2. Runde';
-  }
-  if (value.includes('3. runde') || value.includes('dritte runde')) {
-    return '3. Runde';
+  if (score.homeScore > score.awayScore) {
+    return homeName;
   }
 
-  return 'Spiel';
-}
-
-function extractNamesFromLine(line) {
-  const text = normalizeText(line);
-
-  const separators = [
-    /\s+vs\.?\s+/i,
-    /\s+v\s+/i,
-    /\s+-\s+/i,
-    /\s+gegen\s+/i,
-  ];
-
-  for (const separator of separators) {
-    const parts = text.split(separator).map(normalizeText);
-
-    if (parts.length >= 2 && parts[0] && parts[1]) {
-      return {
-        homeName: parts[0]
-          .replace(/\d+\s*:\s*\d+/g, '')
-          .replace(/\b\d{1,2}:\d{2}\b/g, '')
-          .trim(),
-        awayName: parts[1]
-          .replace(/\d+\s*:\s*\d+/g, '')
-          .replace(/\b\d{1,2}:\d{2}\b/g, '')
-          .trim(),
-      };
-    }
+  if (score.awayScore > score.homeScore) {
+    return awayName;
   }
 
   return null;
 }
 
-function isUsefulMatchLine(line) {
-  const text = normalizeText(line);
-
-  if (!text) return false;
-  if (text.length < 8) return false;
-
-  return (
-    /\s+vs\.?\s+/i.test(text) ||
-    /\s+v\s+/i.test(text) ||
-    /\s+-\s+/i.test(text) ||
-    /\s+gegen\s+/i.test(text)
-  );
-}
-
-function buildMatchId(match) {
+function buildDomMatchId(match) {
   return [
+    match.sportRadarId,
     match.dateText,
     match.tournament,
     match.round,
     match.homeName,
     match.awayName,
-    match.timeText,
     match.scoreText,
   ]
     .map(normalizeKey)
@@ -477,62 +412,312 @@ function buildMatchId(match) {
     .join('_');
 }
 
-function parseMatchesFromText(pageText, dateText = '') {
-  const lines = pageText
-    .split('\n')
-    .map(normalizeText)
-    .filter(Boolean);
+function parseSportRadarIdFromHref(href) {
+  const value = String(href || '');
+  const match = value.match(/sr:sport_event:\d+/);
 
-  const matches = [];
+  return match ? match[0] : '';
+}
 
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
+async function parseMatchesFromDom(page, dateText = '') {
+  return await page.evaluate(
+    ({ dateTextValue }) => {
+      const normalize = (value) =>
+        String(value || '')
+          .replace(/\u00a0/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
 
-    if (!isUsefulMatchLine(line)) {
-      continue;
-    }
+      const formatName = (value) => {
+        const text = normalize(value);
 
-    const names = extractNamesFromLine(line);
+        if (!text.includes(',')) {
+          return text;
+        }
 
-    if (!names || !names.homeName || !names.awayName) {
-      continue;
-    }
+        const parts = text.split(',').map((part) => part.trim());
 
-    const contextLines = lines.slice(Math.max(0, i - 8), i + 9);
-    const contextText = contextLines.join(' ');
-    const score = parseScore(contextText);
-    const status = detectStatus(contextText);
+        if (parts.length < 2 || !parts[0] || !parts[1]) {
+          return text;
+        }
 
-    const match = {
-      id: '',
-      source: 'sport1',
-      tournament: guessTournamentFromText(contextText),
-      round: guessRoundFromText(contextText),
-      status,
-      homeName: names.homeName,
-      awayName: names.awayName,
-      homeScore: score.homeScore,
-      awayScore: score.awayScore,
-      hasScore: score.hasScore,
-      dateText,
-      timeText: extractTimeFromText(contextText),
-      scoreText: score.hasScore ? `${score.homeScore}:${score.awayScore}` : '',
-      rawText: contextText,
-      updatedAt: new Date().toISOString(),
-    };
+        return `${parts[1]} ${parts[0]}`;
+      };
 
-    match.id = buildMatchId(match);
+      const parseScore = (value) => {
+        const text = normalize(value);
+        const match = text.match(/(\d+)\s*:\s*(\d+)/);
 
-    if (
-      match.homeName.length > 1 &&
-      match.awayName.length > 1 &&
-      !matches.some((existing) => existing.id === match.id)
-    ) {
-      matches.push(match);
-    }
-  }
+        if (!match) {
+          return {
+            scoreText: '',
+            homeScore: null,
+            awayScore: null,
+            hasScore: false,
+          };
+        }
 
-  return matches;
+        return {
+          scoreText: `${Number(match[1])}:${Number(match[2])}`,
+          homeScore: Number(match[1]),
+          awayScore: Number(match[2]),
+          hasScore: true,
+        };
+      };
+
+      const normalizeKey = (value) =>
+        normalize(value)
+          .toLowerCase()
+          .replace(/[^a-z0-9äöüß]+/gi, '-')
+          .replace(/^-+|-+$/g, '');
+
+      const parseSportRadarId = (href) => {
+        const match = String(href || '').match(/sr:sport_event:\d+/);
+        return match ? match[0] : '';
+      };
+
+      const widget = document.querySelector('[data-testid="live-widget"]');
+
+      if (!widget) {
+        return [];
+      }
+
+      const textOf = (element) =>
+        normalize(element ? element.innerText || element.textContent || '' : '');
+
+      const tournamentCandidates = Array.from(widget.querySelectorAll('*')).filter(
+        (element) => {
+          const text = textOf(element);
+
+          if (!text) {
+            return false;
+          }
+
+          if (
+            text.includes('DARTS HEUTE LIVE') ||
+            text.includes('Spielplan') ||
+            text.includes('Heute')
+          ) {
+            return false;
+          }
+
+          return (
+            text.includes('Darts Masters') ||
+            text.includes('Darts Open') ||
+            text.includes('Players Championship') ||
+            text.includes('World Matchplay') ||
+            text.includes('World Championship') ||
+            text.includes('Premier League') ||
+            text.includes('Grand Prix') ||
+            text.includes('Grand Slam')
+          );
+        },
+      );
+
+      let tournament = 'PDC Darts';
+
+      for (const candidate of tournamentCandidates) {
+        const text = textOf(candidate);
+
+        if (text.length > 3 && text.length < 80) {
+          tournament = text;
+          break;
+        }
+      }
+
+      const roundCandidates = Array.from(widget.querySelectorAll('*')).filter(
+        (element) => {
+          const text = textOf(element).toLowerCase();
+
+          if (!text || text.length > 50) {
+            return false;
+          }
+
+          return (
+            text.includes('runde') ||
+            text.includes('sechzehntelfinale') ||
+            text.includes('achtelfinale') ||
+            text.includes('viertelfinale') ||
+            text.includes('halbfinale') ||
+            text === 'finale' ||
+            text.includes('finale')
+          );
+        },
+      );
+
+      let round = 'Spiel';
+
+      for (const candidate of roundCandidates) {
+        const text = textOf(candidate);
+
+        if (text && text.length < 50) {
+          round = text;
+          break;
+        }
+      }
+
+      const matchLinks = Array.from(
+        widget.querySelectorAll('a[href*="sr:sport_event:"]'),
+      );
+
+      const uniqueLinks = [];
+      const seenIds = new Set();
+
+      for (const link of matchLinks) {
+        const href = link.getAttribute('href') || '';
+        const sportRadarId = parseSportRadarId(href);
+
+        if (!sportRadarId || seenIds.has(sportRadarId)) {
+          continue;
+        }
+
+        const linkText = textOf(link);
+
+        if (!/\d+\s*:\s*\d+/.test(linkText) && !/\d{1,2}:\d{2}/.test(linkText)) {
+          continue;
+        }
+
+        seenIds.add(sportRadarId);
+        uniqueLinks.push(link);
+      }
+
+      const matches = [];
+
+      for (const link of uniqueLinks) {
+        const href = link.getAttribute('href') || '';
+        const sportRadarId = parseSportRadarId(href);
+
+        const spans = Array.from(link.querySelectorAll('span'))
+          .map((span) => textOf(span))
+          .filter(Boolean);
+
+        const scoreIndex = spans.findIndex((value) =>
+          /\d+\s*:\s*\d+/.test(value),
+        );
+
+        const timeIndex = spans.findIndex((value) =>
+          /^\d{1,2}:\d{2}$/.test(value),
+        );
+
+        let homeRaw = '';
+        let awayRaw = '';
+        let scoreRaw = '';
+        let timeText = '';
+
+        if (scoreIndex >= 0) {
+          scoreRaw = spans[scoreIndex];
+
+          for (let index = scoreIndex - 1; index >= 0; index -= 1) {
+            if (!/\d+\s*:\s*\d+/.test(spans[index])) {
+              homeRaw = spans[index];
+              break;
+            }
+          }
+
+          for (let index = scoreIndex + 1; index < spans.length; index += 1) {
+            if (!/\d+\s*:\s*\d+/.test(spans[index])) {
+              awayRaw = spans[index];
+              break;
+            }
+          }
+        } else if (timeIndex >= 0) {
+          timeText = spans[timeIndex];
+
+          for (let index = timeIndex - 1; index >= 0; index -= 1) {
+            if (!/^\d{1,2}:\d{2}$/.test(spans[index])) {
+              homeRaw = spans[index];
+              break;
+            }
+          }
+
+          for (let index = timeIndex + 1; index < spans.length; index += 1) {
+            if (!/^\d{1,2}:\d{2}$/.test(spans[index])) {
+              awayRaw = spans[index];
+              break;
+            }
+          }
+        }
+
+        if (!homeRaw || !awayRaw) {
+          continue;
+        }
+
+        const score = parseScore(scoreRaw);
+        const status = score.hasScore ? 'finished' : 'scheduled';
+        const homeName = formatName(homeRaw);
+        const awayName = formatName(awayRaw);
+
+        const winner =
+          status === 'finished' && score.hasScore
+            ? score.homeScore > score.awayScore
+              ? homeName
+              : score.awayScore > score.homeScore
+                ? awayName
+                : null
+            : null;
+
+        const match = {
+          id: '',
+          source: 'sport1',
+          sportRadarId,
+          href,
+          tournament,
+          tournamentName: tournament,
+          round,
+          roundName: round,
+          status,
+
+          dateText: dateTextValue,
+          timeText,
+
+          homeName,
+          awayName,
+          player1: homeRaw,
+          player2: awayRaw,
+          player1DisplayName: homeName,
+          player2DisplayName: awayName,
+
+          homeScore: score.hasScore ? score.homeScore : null,
+          awayScore: score.hasScore ? score.awayScore : null,
+          legs1: score.hasScore ? score.homeScore : null,
+          legs2: score.hasScore ? score.awayScore : null,
+          legs: score.hasScore ? `${score.homeScore}-${score.awayScore}` : '0-0',
+          scoreText: score.scoreText,
+          hasScore: score.hasScore,
+
+          isLive: status === 'live',
+          isScheduled: status === 'scheduled',
+          isFinished: status === 'finished',
+
+          winner,
+          winnerDisplayName: winner,
+
+          rawText: textOf(link),
+          updatedAt: new Date().toISOString(),
+        };
+
+        match.id = [
+          match.sportRadarId,
+          match.dateText,
+          match.tournament,
+          match.round,
+          match.homeName,
+          match.awayName,
+          match.scoreText,
+        ]
+          .map(normalizeKey)
+          .filter(Boolean)
+          .join('_');
+
+        matches.push(match);
+      }
+
+      return matches;
+    },
+    {
+      dateTextValue: dateText,
+    },
+  );
 }
 
 function removeDuplicateMatches(matches) {
@@ -541,13 +726,14 @@ function removeDuplicateMatches(matches) {
 
   for (const match of matches) {
     const key = [
+      match.sportRadarId,
       match.dateText,
       match.tournament,
       match.round,
       match.homeName,
       match.awayName,
-      match.timeText,
       match.scoreText,
+      match.timeText,
     ]
       .map(normalizeKey)
       .join('|');
@@ -585,7 +771,7 @@ async function getRenderedSport1Text() {
   }
 }
 
-async function getRenderedSport1TextsByDate() {
+async function getRenderedSport1DataByDate() {
   const { browser, page } = await createRenderedPage();
 
   try {
@@ -599,6 +785,10 @@ async function getRenderedSport1TextsByDate() {
         dateText: dateTabs.includes('Heute') ? 'Heute' : dateTabs[0] || '',
         clicked: false,
         text: firstText,
+        matches: await parseMatchesFromDom(
+          page,
+          dateTabs.includes('Heute') ? 'Heute' : dateTabs[0] || '',
+        ),
       },
     ];
 
@@ -614,11 +804,13 @@ async function getRenderedSport1TextsByDate() {
       }
 
       const text = await getLiveWidgetText(page);
+      const matches = await parseMatchesFromDom(page, dateLabel);
 
       results.push({
         dateText: dateLabel,
         clicked: true,
         text,
+        matches,
       });
     }
 
@@ -632,12 +824,10 @@ async function getRenderedSport1TextsByDate() {
 }
 
 async function getLiveDartsData() {
-  const rendered = await getRenderedSport1TextsByDate();
+  const rendered = await getRenderedSport1DataByDate();
 
   const matches = removeDuplicateMatches(
-    rendered.results.flatMap((result) =>
-      parseMatchesFromText(result.text, result.dateText),
-    ),
+    rendered.results.flatMap((result) => result.matches),
   );
 
   const grouped = splitMatchesByStatus(matches);
@@ -645,24 +835,28 @@ async function getLiveDartsData() {
   return {
     source: 'sport1',
     status: 'ok',
-    mode: 'playwright-render-live-widget-wait',
+    mode: 'playwright-render-dom-parser',
     url: SPORT1_DARTS_URL,
     lastUpdated: new Date().toISOString(),
+
     total: matches.length,
     matchCount: matches.length,
     liveMatches: grouped.current.length,
     scheduledMatches: grouped.scheduled.length,
     finishedMatches: grouped.finished.length,
     hasLiveMatches: grouped.current.length > 0,
+
     availableDates: rendered.dateTabs,
     checkedDates: rendered.results.map((result) => ({
       dateText: result.dateText,
       clicked: result.clicked,
       textLength: result.text.length,
+      matchCount: result.matches.length,
       hasNoEventsText: result.text.includes(
         'An diesem Tag gibt es keine Events im Darts',
       ),
     })),
+
     matches,
     current: grouped.current,
     scheduled: grouped.scheduled,
@@ -680,6 +874,10 @@ async function getSport1DebugText() {
     const bodyText = await getVisibleBodyText(page);
     const dateTabs = extractDateLabelsFromText(widgetText || bodyText);
     const widgetState = await getLiveWidgetDebugState(page);
+    const matches = await parseMatchesFromDom(
+      page,
+      dateTabs.includes('Heute') ? 'Heute' : dateTabs[0] || '',
+    );
 
     return {
       source: 'sport1',
@@ -689,6 +887,8 @@ async function getSport1DebugText() {
       textLength: widgetText.length,
       bodyTextLength: bodyText.length,
       availableDates: dateTabs,
+      parsedMatchCount: matches.length,
+      parsedMatches: matches,
       text: normalizeText(widgetText).replace(/\s{2,}/g, '\n'),
     };
   } finally {
