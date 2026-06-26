@@ -31,22 +31,6 @@ function normalizeKey(value) {
     .replace(/^-+|-+$/g, '');
 }
 
-function formatPlayerName(value) {
-  const text = normalizeText(value);
-
-  if (!text.includes(',')) {
-    return text;
-  }
-
-  const parts = text.split(',').map((part) => part.trim());
-
-  if (parts.length < 2 || !parts[0] || !parts[1]) {
-    return text;
-  }
-
-  return `${parts[1]} ${parts[0]}`;
-}
-
 async function openSport1Page(page) {
   await page.goto(SPORT1_DARTS_URL, {
     waitUntil: 'domcontentloaded',
@@ -95,10 +79,8 @@ async function waitForLiveWidgetToFinishLoading(page) {
           /\b(Mo|Di|Mi|Do|Fr|Sa|So)\b/.test(text);
 
         const hasPossibleMatchContent =
-          /\b\d{1,2}:\d{2}\b/.test(text) ||
           /\d+\s*:\s*\d+/.test(text) ||
-          /\bvs\.?\b/i.test(text) ||
-          /\bgegen\b/i.test(text) ||
+          /\b\d{1,2}:\d{2}\b/.test(text) ||
           text.includes('Achtelfinale') ||
           text.includes('Viertelfinale') ||
           text.includes('Halbfinale') ||
@@ -200,10 +182,8 @@ async function getLiveWidgetDebugState(page) {
       hasCalendar:
         text.includes('Heute') || /\b(Mo|Di|Mi|Do|Fr|Sa|So)\b/.test(text),
       hasPossibleMatchContent:
-        /\b\d{1,2}:\d{2}\b/.test(text) ||
         /\d+\s*:\s*\d+/.test(text) ||
-        /\bvs\.?\b/i.test(text) ||
-        /\bgegen\b/i.test(text) ||
+        /\b\d{1,2}:\d{2}\b/.test(text) ||
         text.includes('Achtelfinale') ||
         text.includes('Viertelfinale') ||
         text.includes('Halbfinale') ||
@@ -242,181 +222,19 @@ function sortDateLabels(labels) {
   return [...unique.slice(todayIndex), ...unique.slice(0, todayIndex)];
 }
 
-async function clickDateTab(page, dateLabel) {
-  try {
-    const clicked = await page.evaluate((label) => {
-      const normalizedLabel = label.trim();
+function normalizeRoundTitle(value) {
+  const text = normalizeText(value).toLowerCase();
 
-      const widget = document.querySelector('[data-testid="live-widget"]');
-      const root = widget || document.body;
+  if (text.includes('sechzehntelfinale')) return 'Sechzehntelfinale';
+  if (text.includes('achtelfinale')) return 'Achtelfinale';
+  if (text.includes('viertelfinale')) return 'Viertelfinale';
+  if (text.includes('halbfinale')) return 'Halbfinale';
+  if (text === 'finale' || text.includes('finale')) return 'Finale';
+  if (text.includes('1. runde') || text.includes('runde 1')) return '1. Runde';
+  if (text.includes('2. runde') || text.includes('runde 2')) return '2. Runde';
+  if (text.includes('3. runde') || text.includes('runde 3')) return '3. Runde';
 
-      if (!root) {
-        return false;
-      }
-
-      const parts = normalizedLabel.split(/\s+/);
-      const dayName = parts[0] || normalizedLabel;
-      const dayNumber = parts[1] || null;
-
-      const calendarItems = Array.from(root.querySelectorAll('div')).filter(
-        (element) => {
-          const text = (element.innerText || element.textContent || '')
-            .replace(/\s+/g, ' ')
-            .trim();
-
-          if (!text) {
-            return false;
-          }
-
-          if (normalizedLabel === 'Heute') {
-            return text === 'Heute' || /^Heute\s+\d{1,2}$/.test(text);
-          }
-
-          if (!dayNumber) {
-            return text === normalizedLabel;
-          }
-
-          return (
-            text === normalizedLabel ||
-            text === `${dayName} ${dayNumber}` ||
-            (text.includes(dayName) && text.includes(dayNumber))
-          );
-        },
-      );
-
-      for (const element of calendarItems) {
-        const rect = element.getBoundingClientRect();
-
-        if (rect.width <= 0 || rect.height <= 0) {
-          continue;
-        }
-
-        const clickable = element.closest('div') || element;
-
-        clickable.dispatchEvent(
-          new PointerEvent('pointerdown', {
-            bubbles: true,
-            cancelable: true,
-            view: window,
-          }),
-        );
-
-        clickable.dispatchEvent(
-          new MouseEvent('mousedown', {
-            bubbles: true,
-            cancelable: true,
-            view: window,
-          }),
-        );
-
-        clickable.dispatchEvent(
-          new PointerEvent('pointerup', {
-            bubbles: true,
-            cancelable: true,
-            view: window,
-          }),
-        );
-
-        clickable.dispatchEvent(
-          new MouseEvent('mouseup', {
-            bubbles: true,
-            cancelable: true,
-            view: window,
-          }),
-        );
-
-        clickable.dispatchEvent(
-          new MouseEvent('click', {
-            bubbles: true,
-            cancelable: true,
-            view: window,
-          }),
-        );
-
-        return true;
-      }
-
-      return false;
-    }, dateLabel);
-
-    if (!clicked) {
-      return false;
-    }
-
-    await waitForLiveWidgetToFinishLoading(page);
-    await page.waitForTimeout(1000);
-
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-
-function parseScoreText(value) {
-  const text = normalizeText(value);
-  const match = text.match(/(\d+)\s*:\s*(\d+)/);
-
-  if (!match) {
-    return {
-      scoreText: '',
-      homeScore: null,
-      awayScore: null,
-      hasScore: false,
-    };
-  }
-
-  return {
-    scoreText: `${Number(match[1])}:${Number(match[2])}`,
-    homeScore: Number(match[1]),
-    awayScore: Number(match[2]),
-    hasScore: true,
-  };
-}
-
-function determineStatusFromScore(score) {
-  if (!score.hasScore) {
-    return 'scheduled';
-  }
-
-  return 'finished';
-}
-
-function determineWinner(homeName, awayName, status, score) {
-  if (status !== 'finished' || !score.hasScore) {
-    return null;
-  }
-
-  if (score.homeScore > score.awayScore) {
-    return homeName;
-  }
-
-  if (score.awayScore > score.homeScore) {
-    return awayName;
-  }
-
-  return null;
-}
-
-function buildDomMatchId(match) {
-  return [
-    match.sportRadarId,
-    match.dateText,
-    match.tournament,
-    match.round,
-    match.homeName,
-    match.awayName,
-    match.scoreText,
-  ]
-    .map(normalizeKey)
-    .filter(Boolean)
-    .join('_');
-}
-
-function parseSportRadarIdFromHref(href) {
-  const value = String(href || '');
-  const match = value.match(/sr:sport_event:\d+/);
-
-  return match ? match[0] : '';
+  return normalizeText(value) || 'Spiel';
 }
 
 async function parseMatchesFromDom(page, dateText = '') {
@@ -427,6 +245,12 @@ async function parseMatchesFromDom(page, dateText = '') {
           .replace(/\u00a0/g, ' ')
           .replace(/\s+/g, ' ')
           .trim();
+
+      const normalizeKey = (value) =>
+        normalize(value)
+          .toLowerCase()
+          .replace(/[^a-z0-9äöüß]+/gi, '-')
+          .replace(/^-+|-+$/g, '');
 
       const formatName = (value) => {
         const text = normalize(value);
@@ -465,16 +289,34 @@ async function parseMatchesFromDom(page, dateText = '') {
         };
       };
 
-      const normalizeKey = (value) =>
-        normalize(value)
-          .toLowerCase()
-          .replace(/[^a-z0-9äöüß]+/gi, '-')
-          .replace(/^-+|-+$/g, '');
-
       const parseSportRadarId = (href) => {
         const match = String(href || '').match(/sr:sport_event:\d+/);
         return match ? match[0] : '';
       };
+
+      const normalizeRound = (value) => {
+        const text = normalize(value).toLowerCase();
+
+        if (text.includes('sechzehntelfinale')) return 'Sechzehntelfinale';
+        if (text.includes('achtelfinale')) return 'Achtelfinale';
+        if (text.includes('viertelfinale')) return 'Viertelfinale';
+        if (text.includes('halbfinale')) return 'Halbfinale';
+        if (text === 'finale' || text.includes('finale')) return 'Finale';
+        if (text.includes('1. runde') || text.includes('runde 1')) {
+          return '1. Runde';
+        }
+        if (text.includes('2. runde') || text.includes('runde 2')) {
+          return '2. Runde';
+        }
+        if (text.includes('3. runde') || text.includes('runde 3')) {
+          return '3. Runde';
+        }
+
+        return normalize(value) || 'Spiel';
+      };
+
+      const textOf = (element) =>
+        normalize(element ? element.innerText || element.textContent || '' : '');
 
       const widget = document.querySelector('[data-testid="live-widget"]');
 
@@ -482,14 +324,11 @@ async function parseMatchesFromDom(page, dateText = '') {
         return [];
       }
 
-      const textOf = (element) =>
-        normalize(element ? element.innerText || element.textContent || '' : '');
-
       const tournamentCandidates = Array.from(widget.querySelectorAll('*')).filter(
         (element) => {
           const text = textOf(element);
 
-          if (!text) {
+          if (!text || text.length > 80) {
             return false;
           }
 
@@ -551,7 +390,7 @@ async function parseMatchesFromDom(page, dateText = '') {
         const text = textOf(candidate);
 
         if (text && text.length < 50) {
-          round = text;
+          round = normalizeRound(text);
           break;
         }
       }
@@ -704,6 +543,7 @@ async function parseMatchesFromDom(page, dateText = '') {
           match.homeName,
           match.awayName,
           match.scoreText,
+          match.timeText,
         ]
           .map(normalizeKey)
           .filter(Boolean)
@@ -727,7 +567,6 @@ function removeDuplicateMatches(matches) {
   for (const match of matches) {
     const key = [
       match.sportRadarId,
-      match.dateText,
       match.tournament,
       match.round,
       match.homeName,
@@ -771,52 +610,25 @@ async function getRenderedSport1Text() {
   }
 }
 
-async function getRenderedSport1DataByDate() {
+async function getRenderedSport1Data() {
   const { browser, page } = await createRenderedPage();
 
   try {
     await openSport1Page(page);
 
-    const firstText = await getLiveWidgetText(page);
-    const dateTabs = extractDateLabelsFromText(firstText);
-
-    const results = [
-      {
-        dateText: dateTabs.includes('Heute') ? 'Heute' : dateTabs[0] || '',
-        clicked: false,
-        text: firstText,
-        matches: await parseMatchesFromDom(
-          page,
-          dateTabs.includes('Heute') ? 'Heute' : dateTabs[0] || '',
-        ),
-      },
-    ];
-
-    for (const dateLabel of dateTabs) {
-      if (results.some((result) => result.dateText === dateLabel)) {
-        continue;
-      }
-
-      const clicked = await clickDateTab(page, dateLabel);
-
-      if (!clicked) {
-        continue;
-      }
-
-      const text = await getLiveWidgetText(page);
-      const matches = await parseMatchesFromDom(page, dateLabel);
-
-      results.push({
-        dateText: dateLabel,
-        clicked: true,
-        text,
-        matches,
-      });
-    }
+    const text = await getLiveWidgetText(page);
+    const dateTabs = extractDateLabelsFromText(text);
+    const dateText = dateTabs.includes('Heute') ? 'Heute' : dateTabs[0] || '';
+    const matches = await parseMatchesFromDom(page, dateText);
 
     return {
       dateTabs,
-      results,
+      result: {
+        dateText,
+        clicked: false,
+        text,
+        matches,
+      },
     };
   } finally {
     await browser.close();
@@ -824,18 +636,15 @@ async function getRenderedSport1DataByDate() {
 }
 
 async function getLiveDartsData() {
-  const rendered = await getRenderedSport1DataByDate();
+  const rendered = await getRenderedSport1Data();
 
-  const matches = removeDuplicateMatches(
-    rendered.results.flatMap((result) => result.matches),
-  );
-
+  const matches = removeDuplicateMatches(rendered.result.matches);
   const grouped = splitMatchesByStatus(matches);
 
   return {
     source: 'sport1',
     status: 'ok',
-    mode: 'playwright-render-dom-parser',
+    mode: 'playwright-render-dom-parser-current-day',
     url: SPORT1_DARTS_URL,
     lastUpdated: new Date().toISOString(),
 
@@ -847,15 +656,17 @@ async function getLiveDartsData() {
     hasLiveMatches: grouped.current.length > 0,
 
     availableDates: rendered.dateTabs,
-    checkedDates: rendered.results.map((result) => ({
-      dateText: result.dateText,
-      clicked: result.clicked,
-      textLength: result.text.length,
-      matchCount: result.matches.length,
-      hasNoEventsText: result.text.includes(
-        'An diesem Tag gibt es keine Events im Darts',
-      ),
-    })),
+    checkedDates: [
+      {
+        dateText: rendered.result.dateText,
+        clicked: false,
+        textLength: rendered.result.text.length,
+        matchCount: matches.length,
+        hasNoEventsText: rendered.result.text.includes(
+          'An diesem Tag gibt es keine Events im Darts',
+        ),
+      },
+    ],
 
     matches,
     current: grouped.current,
@@ -873,11 +684,9 @@ async function getSport1DebugText() {
     const widgetText = await getLiveWidgetText(page);
     const bodyText = await getVisibleBodyText(page);
     const dateTabs = extractDateLabelsFromText(widgetText || bodyText);
+    const dateText = dateTabs.includes('Heute') ? 'Heute' : dateTabs[0] || '';
     const widgetState = await getLiveWidgetDebugState(page);
-    const matches = await parseMatchesFromDom(
-      page,
-      dateTabs.includes('Heute') ? 'Heute' : dateTabs[0] || '',
-    );
+    const matches = await parseMatchesFromDom(page, dateText);
 
     return {
       source: 'sport1',
