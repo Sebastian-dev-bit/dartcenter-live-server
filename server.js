@@ -5,6 +5,7 @@ const cors = require('cors');
 const {
   getLiveDartsData,
   getSport1DebugText,
+  getSport1DebugHtml,
 } = require('./scraper');
 
 const {
@@ -29,6 +30,7 @@ app.get('/', (req, res) => {
       '/live/scheduled',
       '/live/finished',
       '/debug/sport1-text',
+      '/debug/sport1-html',
       '/archive',
       '/archive/tournaments',
       '/archive/seed/slovak-darts-open',
@@ -57,6 +59,21 @@ app.get('/live', async (req, res) => {
 app.get('/debug/sport1-text', async (req, res) => {
   try {
     const data = await getSport1DebugText();
+
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({
+      lastUpdate: new Date().toISOString(),
+      source: 'sport1',
+      error: true,
+      message: error.message,
+    });
+  }
+});
+
+app.get('/debug/sport1-html', async (req, res) => {
+  try {
+    const data = await getSport1DebugHtml();
 
     res.json(data);
   } catch (error) {
