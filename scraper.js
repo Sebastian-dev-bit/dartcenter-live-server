@@ -42,14 +42,17 @@ async function openSport1Page(page) {
 
 async function getVisibleBodyText(page) {
   return await page.evaluate(() => {
-    return document.body ? document.body.innerText || document.body.textContent || '' : '';
+    return document.body
+      ? document.body.innerText || document.body.textContent || ''
+      : '';
   });
 }
 
 function extractDateLabelsFromText(text) {
   const value = normalizeText(text);
   const labels = [];
-  const regex = /\b(Mo|Di|Mi|Do|Fr|Sa|So)\s+\d{1,2}\b|\bHeute\b|\bMorgen\b|\bGestern\b/g;
+  const regex =
+    /\b(Mo|Di|Mi|Do|Fr|Sa|So)\s+\d{1,2}\b|\bHeute\b|\bMorgen\b|\bGestern\b/g;
 
   let match;
 
@@ -77,26 +80,62 @@ function sortDateLabels(labels) {
 
 async function clickDateTab(page, dateLabel) {
   try {
-    const locator = page.getByText(dateLabel, { exact: true });
-    const count = await locator.count();
+    const clicked = await page.evaluate((label) => {
+      const normalizedLabel = label.trim();
 
-    for (let index = 0; index < count; index += 1) {
-      const item = locator.nth(index);
+      const elements = Array.from(document.querySelectorAll('*')).filter(
+        (element) => {
+          const text = (element.innerText || element.textContent || '').trim();
+          return text === normalizedLabel;
+        },
+      );
 
-      try {
-        if (!(await item.isVisible())) {
+      for (const element of elements) {
+        const rect = element.getBoundingClientRect();
+
+        if (rect.width <= 0 || rect.height <= 0) {
           continue;
         }
 
-        await item.click({ timeout: 5000 });
-        await page.waitForTimeout(1500);
+        const clickable =
+          element.closest('button, a, [role="button"]') || element;
+
+        clickable.dispatchEvent(
+          new MouseEvent('mousedown', {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+          }),
+        );
+
+        clickable.dispatchEvent(
+          new MouseEvent('mouseup', {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+          }),
+        );
+
+        clickable.dispatchEvent(
+          new MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+          }),
+        );
+
         return true;
-      } catch (_) {
-        continue;
       }
+
+      return false;
+    }, dateLabel);
+
+    if (!clicked) {
+      return false;
     }
 
-    return false;
+    await page.waitForTimeout(1800);
+    return true;
   } catch (_) {
     return false;
   }
@@ -184,9 +223,15 @@ function guessRoundFromText(text) {
   if (value.includes('viertelfinale')) return 'Viertelfinale';
   if (value.includes('halbfinale')) return 'Halbfinale';
   if (value.includes('finale')) return 'Finale';
-  if (value.includes('1. runde') || value.includes('erste runde')) return '1. Runde';
-  if (value.includes('2. runde') || value.includes('zweite runde')) return '2. Runde';
-  if (value.includes('3. runde') || value.includes('dritte runde')) return '3. Runde';
+  if (value.includes('1. runde') || value.includes('erste runde')) {
+    return '1. Runde';
+  }
+  if (value.includes('2. runde') || value.includes('zweite runde')) {
+    return '2. Runde';
+  }
+  if (value.includes('3. runde') || value.includes('dritte runde')) {
+    return '3. Runde';
+  }
 
   return 'Spiel';
 }
@@ -432,7 +477,9 @@ async function getLiveDartsData() {
       dateText: result.dateText,
       clicked: result.clicked,
       textLength: result.text.length,
-      hasNoEventsText: result.text.includes('An diesem Tag gibt es keine Events im Darts'),
+      hasNoEventsText: result.text.includes(
+        'An diesem Tag gibt es keine Events im Darts',
+      ),
     })),
     matches,
     current: grouped.current,
