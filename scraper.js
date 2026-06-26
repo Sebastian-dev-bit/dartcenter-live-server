@@ -502,7 +502,30 @@ async function getSport1DebugText() {
   };
 }
 
+async function getSport1DebugHtml() {
+  const { browser, page } = await createRenderedPage();
+
+  try {
+    await openSport1Page(page);
+
+    const html = await page.evaluate(() => {
+      return document.body ? document.body.innerHTML : '';
+    });
+
+    return {
+      source: 'sport1',
+      url: SPORT1_DARTS_URL,
+      lastUpdated: new Date().toISOString(),
+      htmlLength: html.length,
+      html,
+    };
+  } finally {
+    await browser.close();
+  }
+}
+
 module.exports = {
   getLiveDartsData,
   getSport1DebugText,
+  getSport1DebugHtml,
 };
