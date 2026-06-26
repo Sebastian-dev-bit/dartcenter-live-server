@@ -37,7 +37,68 @@ async function openSport1Page(page) {
     timeout: 60000,
   });
 
-  await page.waitForTimeout(3000);
+  await page.waitForSelector('[data-testid="live-widget"]', {
+    timeout: 30000,
+  });
+
+  await waitForLiveWidgetToFinishLoading(page);
+}
+
+async function waitForLiveWidgetToFinishLoading(page) {
+  try {
+    await page.waitForFunction(
+      () => {
+        const widget = document.querySelector('[data-testid="live-widget"]');
+
+        if (!widget) {
+          return false;
+        }
+
+        const text = widget.innerText || widget.textContent || '';
+
+        const hasLoadingSpinner =
+          widget.querySelector('[rotate="30"]') ||
+          widget.querySelector('[rotate="60"]') ||
+          widget.querySelector('[rotate="90"]') ||
+          widget.querySelector('[rotate="120"]') ||
+          widget.querySelector('[rotate="150"]') ||
+          widget.querySelector('[rotate="180"]') ||
+          widget.querySelector('[rotate="210"]') ||
+          widget.querySelector('[rotate="240"]') ||
+          widget.querySelector('[rotate="270"]') ||
+          widget.querySelector('[rotate="300"]') ||
+          widget.querySelector('[rotate="330"]') ||
+          widget.querySelector('[rotate="360"]');
+
+        const hasNoEventsText =
+          text.includes('An diesem Tag gibt es keine Events im Darts') ||
+          text.includes('keine Events');
+
+        const hasCalendar =
+          text.includes('Heute') ||
+          /\b(Mo|Di|Mi|Do|Fr|Sa|So)\b/.test(text);
+
+        const hasPossibleMatchContent =
+          /\b\d{1,2}:\d{2}\b/.test(text) ||
+          /\d+\s*:\s*\d+/.test(text) ||
+          /\bvs\.?\b/i.test(text) ||
+          /\bgegen\b/i.test(text);
+
+        if (hasLoadingSpinner && !hasNoEventsText && !hasPossibleMatchContent) {
+          return false;
+        }
+
+        return hasCalendar || hasNoEventsText || hasPossibleMatchContent;
+      },
+      {
+        timeout: 30000,
+      },
+    );
+  } catch (_) {
+    await page.waitForTimeout(5000);
+  }
+
+  await page.waitForTimeout(1500);
 }
 
 async function getVisibleBodyText(page) {
@@ -45,6 +106,85 @@ async function getVisibleBodyText(page) {
     return document.body
       ? document.body.innerText || document.body.textContent || ''
       : '';
+  });
+}
+
+async function getLiveWidgetText(page) {
+  return await page.evaluate(() => {
+    const widget = document.querySelector('[data-testid="live-widget"]');
+
+    if (!widget) {
+      return document.body
+        ? document.body.innerText || document.body.textContent || ''
+        : '';
+    }
+
+    return widget.innerText || widget.textContent || '';
+  });
+}
+
+async function getLiveWidgetHtml(page) {
+  return await page.evaluate(() => {
+    const widget = document.querySelector('[data-testid="live-widget"]');
+
+    if (!widget) {
+      return document.body ? document.body.innerHTML : '';
+    }
+
+    return widget.innerHTML || '';
+  });
+}
+
+async function getLiveWidgetDebugState(page) {
+  return await page.evaluate(() => {
+    const widget = document.querySelector('[data-testid="live-widget"]');
+
+    if (!widget) {
+      return {
+        hasWidget: false,
+        textLength: 0,
+        htmlLength: 0,
+        hasSpinner: false,
+        hasNoEventsText: false,
+        hasCalendar: false,
+        hasPossibleMatchContent: false,
+      };
+    }
+
+    const text = widget.innerText || widget.textContent || '';
+    const html = widget.innerHTML || '';
+
+    const hasSpinner = Boolean(
+      widget.querySelector('[rotate="30"]') ||
+        widget.querySelector('[rotate="60"]') ||
+        widget.querySelector('[rotate="90"]') ||
+        widget.querySelector('[rotate="120"]') ||
+        widget.querySelector('[rotate="150"]') ||
+        widget.querySelector('[rotate="180"]') ||
+        widget.querySelector('[rotate="210"]') ||
+        widget.querySelector('[rotate="240"]') ||
+        widget.querySelector('[rotate="270"]') ||
+        widget.querySelector('[rotate="300"]') ||
+        widget.querySelector('[rotate="330"]') ||
+        widget.querySelector('[rotate="360"]'),
+    );
+
+    return {
+      hasWidget: true,
+      textLength: text.length,
+      htmlLength: html.length,
+      hasSpinner,
+      hasNoEventsText:
+        text.includes('An diesem Tag gibt es keine Events im Darts') ||
+        text.includes('keine Events'),
+      hasCalendar:
+        text.includes('Heute') || /\b(Mo|Di|Mi|Do|Fr|Sa|So)\b/.test(text),
+      hasPossibleMatchContent:
+        /\b\d{1,2}:\d{2}\b/.test(text) ||
+        /\d+\s*:\s*\d+/.test(text) ||
+        /\bvs\.?\b/i.test(text) ||
+        /\bgegen\b/i.test(text),
+    };
   });
 }
 
@@ -83,10 +223,31 @@ async function clickDateTab(page, dateLabel) {
     const clicked = await page.evaluate((label) => {
       const normalizedLabel = label.trim();
 
-      const elements = Array.from(document.querySelectorAll('*')).filter(
+      const widget = document.querySelector('[data-testid="live-widget"]');
+      const root = widget || document.body;
+
+      if (!root) {
+        return false;
+      }
+
+      const elements = Array.from(root.querySelectorAll('*')).filter(
         (element) => {
           const text = (element.innerText || element.textContent || '').trim();
-          return text === normalizedLabel;
+
+          if (text === normalizedLabel) {
+            return true;
+          }
+
+          if (normalizedLabel.includes(' ')) {
+            const parts = normalizedLabel.split(/\s+/);
+
+            if (parts.length === 2) {
+              const compactText = text.replace(/\s+/g, ' ').trim();
+              return compactText === `${parts[0]} ${parts[1]}`;
+            }
+          }
+
+          return false;
         },
       );
 
@@ -98,10 +259,29 @@ async function clickDateTab(page, dateLabel) {
         }
 
         const clickable =
-          element.closest('button, a, [role="button"]') || element;
+          element.closest('[data-testid="live-widget"] div') ||
+          element.closest('button, a, [role="button"]') ||
+          element.parentElement ||
+          element;
+
+        clickable.dispatchEvent(
+          new PointerEvent('pointerdown', {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+          }),
+        );
 
         clickable.dispatchEvent(
           new MouseEvent('mousedown', {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+          }),
+        );
+
+        clickable.dispatchEvent(
+          new PointerEvent('pointerup', {
             bubbles: true,
             cancelable: true,
             view: window,
@@ -134,7 +314,9 @@ async function clickDateTab(page, dateLabel) {
       return false;
     }
 
-    await page.waitForTimeout(1800);
+    await waitForLiveWidgetToFinishLoading(page);
+    await page.waitForTimeout(1000);
+
     return true;
   } catch (_) {
     return false;
@@ -395,7 +577,7 @@ async function getRenderedSport1Text() {
   try {
     await openSport1Page(page);
 
-    const text = await getVisibleBodyText(page);
+    const text = await getLiveWidgetText(page);
 
     return normalizeText(text).replace(/\s{2,}/g, '\n');
   } finally {
@@ -409,7 +591,7 @@ async function getRenderedSport1TextsByDate() {
   try {
     await openSport1Page(page);
 
-    const firstText = await getVisibleBodyText(page);
+    const firstText = await getLiveWidgetText(page);
     const dateTabs = extractDateLabelsFromText(firstText);
 
     const results = [
@@ -431,7 +613,7 @@ async function getRenderedSport1TextsByDate() {
         continue;
       }
 
-      const text = await getVisibleBodyText(page);
+      const text = await getLiveWidgetText(page);
 
       results.push({
         dateText: dateLabel,
@@ -463,7 +645,7 @@ async function getLiveDartsData() {
   return {
     source: 'sport1',
     status: 'ok',
-    mode: 'playwright-render-multi-date',
+    mode: 'playwright-render-live-widget-wait',
     url: SPORT1_DARTS_URL,
     lastUpdated: new Date().toISOString(),
     total: matches.length,
@@ -489,17 +671,29 @@ async function getLiveDartsData() {
 }
 
 async function getSport1DebugText() {
-  const renderedText = await getRenderedSport1Text();
-  const dateTabs = extractDateLabelsFromText(renderedText);
+  const { browser, page } = await createRenderedPage();
 
-  return {
-    source: 'sport1',
-    url: SPORT1_DARTS_URL,
-    lastUpdated: new Date().toISOString(),
-    textLength: renderedText.length,
-    availableDates: dateTabs,
-    text: renderedText,
-  };
+  try {
+    await openSport1Page(page);
+
+    const widgetText = await getLiveWidgetText(page);
+    const bodyText = await getVisibleBodyText(page);
+    const dateTabs = extractDateLabelsFromText(widgetText || bodyText);
+    const widgetState = await getLiveWidgetDebugState(page);
+
+    return {
+      source: 'sport1',
+      url: SPORT1_DARTS_URL,
+      lastUpdated: new Date().toISOString(),
+      widgetState,
+      textLength: widgetText.length,
+      bodyTextLength: bodyText.length,
+      availableDates: dateTabs,
+      text: normalizeText(widgetText).replace(/\s{2,}/g, '\n'),
+    };
+  } finally {
+    await browser.close();
+  }
 }
 
 async function getSport1DebugHtml() {
@@ -508,14 +702,14 @@ async function getSport1DebugHtml() {
   try {
     await openSport1Page(page);
 
-    const html = await page.evaluate(() => {
-      return document.body ? document.body.innerHTML : '';
-    });
+    const html = await getLiveWidgetHtml(page);
+    const widgetState = await getLiveWidgetDebugState(page);
 
     return {
       source: 'sport1',
       url: SPORT1_DARTS_URL,
       lastUpdated: new Date().toISOString(),
+      widgetState,
       htmlLength: html.length,
       html,
     };
